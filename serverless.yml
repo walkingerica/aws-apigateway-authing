@@ -1,0 +1,157 @@
+
+service: aws-apigateway-authing
+
+plugins:
+  - serverless-offline
+  - serverless-s3-sync
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+  stage: dev
+  region: cn-northwest-1
+  timeout: 300
+  memorySize: 1024
+  endpointType: regional
+  lambdaHashingVersion: 20201221
+  s3: 
+    staticSite:
+      name: ${self:custom.siteName}
+      websiteConfiguration:
+          IndexDocument: index.html
+
+
+custom:
+  # Your Modify all bellow info according to your situation
+  # Modified info begin
+  prefix: greg 
+  authId: '6181e88b3925c086f1ef1d8c'
+  authUrl: 'https://cellosqure-demo.authing.cn'
+  authKey: 'da377fd6a35e82d17cebe53f77c7c145'
+  # Modified info end
+  authRedirect: 
+    "Fn::GetAtt": [ S3BucketStaticSite, WebsiteURL ]
+  siteName: ${self:custom.prefix}-authing-web
+  apiPrivateEndpoint:
+    Fn::Join:
+    - ""
+    - - "https://"
+      - Ref: "ApiGatewayRestApi"
+      - ".execute-api."
+      - ${self:provider.region}.
+      - Ref: "AWS::URLSuffix"
+      - "/"
+      - ${self:provider.stage}
+      - "/api/private"
+  apiPublicEndpoint:
+    Fn::Join:
+    - ""
+    - - "https://"
+      - Ref: "ApiGatewayRestApi"
+      - ".execute-api."
+      - ${self:provider.region}.
+      - Ref: "AWS::URLSuffix"
+      - "/"
+      - ${self:provider.stage}
+      - "/api/public"
+  s3Sync:
+    - bucketName: ${self:custom.siteName}
+      localDir: front
+      acl: public-read
+
+functions:
+  auth:
+    handler: handler.auth
+    environment:
+      AUTH_ID: ${self:custom.authId}
+      AUTH_URL: ${self:custom.authUrl}
+      AUTH_REDIRECT: ${self:custom.authRedirect}
+      AUTH_KEY: ${self:custom.authKey}
+  publicEndpoint:
+    handler: handler.publicEndpoint
+    events:
+      - http:
+          path: api/public
+          method: post
+          cors: true
+  privateEndpoint:
+    handler: handler.privateEndpoint
+    events:
+      - http:
+          path: api/private
+          method: post
+          # See custom authorizer docs here: http://bit.ly/2gXw9pO
+          authorizer: auth
+          cors: true
+  s3ConfigModify:
+    handler: s3obj.lambda_handler
+    runtime: python3.7
+    role: StaticSiteLambdaRole
+    environment:
+      PRIVATE_URL: ${self:custom.apiPrivateEndpoint}
+      PUBLIC_URL: ${self:custom.apiPublicEndpoint}
+      AUTH_ID: ${self:custom.authId}
+      AUTH_URL: ${self:custom.authUrl}
+      AUTH_KEY: ${self:custom.authKey}
+    events:
+      - s3:
+          bucket: staticSite
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: app.js
+
+resources:
+  Resources:
+    # This response is needed for custom authorizer failures cors support ¯\_(ツ)_/¯
+    GatewayResponse:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: EXPIRED_TOKEN
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        StatusCode: '401'
+    AuthFailureGatewayResponse:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: UNAUTHORIZED
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        StatusCode: '401'
+    StaticSiteLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /authing/
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: StaticSiteLambdaPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow # note that these rights are given in the default policy and are required if you want logs out of your lambda(s)
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: arn:aws-cn:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/*:*:*
+                - Effect: Allow
+                  Action:
+                    - s3:*
+                  Resource: arn:aws-cn:s3:::${self:custom.siteName}/app.js
+
+outputs:
+  static-web-site: 
+    "Fn::GetAtt": [ S3BucketStaticSite, WebsiteURL ]
+

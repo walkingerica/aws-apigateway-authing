@@ -1,0 +1,7 @@
+
+node_modules
+.serverless
+.webpack
+event
+.DS_Store
+package-lock.json
